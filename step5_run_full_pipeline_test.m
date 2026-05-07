@@ -1,12 +1,14 @@
 % ================================================================
 % step5_run_full_pipeline_test.m
 %
-% PURPOSE: End-to-end integration test. Run synthetic residual sequences
-% through the complete pipeline and verify all components work together.
+% PURPOSE: End-to-end integration test of the complete pipeline.
+% Run synthetic residual sequences through all layers and verify
+% correct behavior.
 %
-% INPUTS: None (uses trained models from steps 2–3)
+% OUTPUTS: Console test results (no files saved)
 %
-% OUTPUTS: Console test results
+% DEPENDENCIES: predict_leak_zone.m, persistence_filter.m,
+%               assemble_output.m, reset_persistence_filter.m
 %
 % ================================================================
 
@@ -16,118 +18,158 @@ fprintf('\n=================================================\n');
 fprintf('STEP 5: FULL PIPELINE INTEGRATION TEST\n');
 fprintf('=================================================\n\n');
 
-% ---- Check models exist ----
-if ~exist('GP_classifier.mat', 'file')
-    error('ERROR: GP_classifier.mat not found. Run step3 first.');
-end
-if ~exist('normalizer_params.mat', 'file')
-    error('ERROR: normalizer_params.mat not found. Run step2 first.');
-end
-
-fprintf('Loaded trained models. Running 5 synthetic test sequences...\n\n');
-
 % ---- Define 5 test sequences ----
-% Each sequence has 10 windows. Each window is [r1, r2, r3]
+sequences = struct();
 
 % Sequence 1: Stable no-fault baseline
-seq1 = randn(10, 3) * 0.3;
-seq1_name = 'Seq 1: Stable No-Fault Baseline';
-seq1_expect = 'All NO LEAK';
+sequences(1).name = 'Sequence 1: No-Fault Baseline';
+sequences(1).windows = [];
+for w = 1:10
+    sequences(1).windows = [sequences(1).windows; ...
+        randn()*0.3, randn()*0.3, randn()*0.3];
+end
+sequences(1).expected_outcome = 'All windows NO LEAK, no alert';
 
 % Sequence 2: Zone B leak developing gradually
-seq2 = zeros(10, 3);
-seq2(1:3, :) = randn(3, 3) * 0.2;  % near-zero
-seq2(4:10, 1) = randn(7, 1) * 0.3;  % r1 noisy
-seq2(4:10, 2) = -5.0 + randn(7, 1) * 0.3;  % r2 strongly negative
-seq2(4:10, 3) = randn(7, 1) * 0.2;  % r3 noisy
-seq2_name = 'Seq 2: Zone B Leak Developing';
-seq2_expect = 'Zone B alert by window 8–9';
+sequences(2).name = 'Sequence 2: Zone B Leak (Gradual)';
+windows_seq2 = [];
+for w = 1:3
+    windows_seq2 = [windows_seq2; randn()*0.3, randn()*0.3, randn()*0.2];
+end
+for w = 4:10
+    windows_seq2 = [windows_seq2; ...
+        randn()*0.3, -5.0 + randn()*0.3, randn()*0.2];
+end
+sequences(2).windows = windows_seq2;
+sequences(2).expected_outcome = 'Alert triggers by window 8-9 (Zone B)';
 
-% Sequence 3: Single noise spike then recovery
-seq3 = zeros(10, 3);
-seq3(1:2, :) = randn(2, 3) * 0.2;  % near-zero
-seq3(3, :) = [-4.0, 0.1, 0.1];  % single Zone A spike
-seq3(4:10, :) = randn(7, 3) * 0.2;  % recovery
-seq3_name = 'Seq 3: Brief Noise Spike (1 window)';
-seq3_expect = 'No confirmed alert (below persistence)';
+% Sequence 3: Brief noise spike then recovery
+sequences(3).name = 'Sequence 3: Noise Spike (Single Window)';
+windows_seq3 = [];
+for w = 1:2
+    windows_seq3 = [windows_seq3; randn()*0.3, randn()*0.3, randn()*0.2];
+end
+windows_seq3 = [windows_seq3; -4.0, 0.1, 0.1];  % single spike
+for w = 4:10
+    windows_seq3 = [windows_seq3; randn()*0.3, randn()*0.3, randn()*0.2];
+end
+sequences(3).windows = windows_seq3;
+sequences(3).expected_outcome = 'No confirmed alert (below persistence threshold)';
 
 % Sequence 4: Zone C leak
-seq4 = zeros(10, 3);
-seq4(1:2, :) = randn(2, 3) * 0.2;  % near-zero
-seq4(3:10, 1) = randn(8, 1) * 0.2;  % r1 noisy
-seq4(3:10, 2) = randn(8, 1) * 0.2;  % r2 noisy
-seq4(3:10, 3) = 4.5 + randn(8, 1) * 0.4;  % r3 strongly positive
-seq4_name = 'Seq 4: Zone C Leak';
-seq4_expect = 'Zone C alert by window 7–8';
+sequences(4).name = 'Sequence 4: Zone C Leak';
+windows_seq4 = [];
+for w = 1:2
+    windows_seq4 = [windows_seq4; randn()*0.3, randn()*0.3, randn()*0.2];
+end
+for w = 3:10
+    windows_seq4 = [windows_seq4; randn()*0.1, randn()*0.1, 4.5 + randn()*0.4];
+end
+sequences(4).windows = windows_seq4;
+sequences(4).expected_outcome = 'Alert triggers by window 7-8 (Zone C)';
 
 % Sequence 5: Zone A then Zone B (zone switch)
-seq5 = zeros(10, 3);
-seq5(1:5, :) = [-4.5 + randn(5,1)*0.3, -0.2 + randn(5,1)*0.2, randn(5,1)*0.2];
-seq5(6:10, :) = [-0.1 + randn(5,1)*0.2, -5.0 + randn(5,1)*0.3, randn(5,1)*0.2];
-seq5_name = 'Seq 5: Zone A → Zone B Switch';
-seq5_expect = 'Zone A alert first, then Zone B';
+sequences(5).name = 'Sequence 5: Zone A → Zone B Transition';
+windows_seq5 = [];
+for w = 1:5
+    windows_seq5 = [windows_seq5; -4.5 + randn()*0.3, -0.2 + randn()*0.2, 0.1 + randn()*0.1];
+end
+for w = 6:10
+    windows_seq5 = [windows_seq5; -0.1 + randn()*0.2, -5.0 + randn()*0.3, 0.1 + randn()*0.1];
+end
+sequences(5).windows = windows_seq5;
+sequences(5).expected_outcome = 'Zone A alert, then reset to Zone B alert';
 
-sequences = {seq1, seq2, seq3, seq4, seq5};
-seq_names = {seq1_name, seq2_name, seq3_name, seq4_name, seq5_name};
-seq_expects = {seq1_expect, seq2_expect, seq3_expect, seq4_expect, seq5_expect};
+% ---- Run all sequences ----
+results = struct();
 
-% ---- Run each sequence ----
-zone_names = {'None', 'A', 'B', 'C', 'D'};
+for seq_idx = 1:length(sequences)
+    seq = sequences(seq_idx);
+    fprintf('%s\n', seq.name);
+    fprintf('%s\n', repmat('=', 1, 70));
 
-for seq_idx = 1:5
-    fprintf('=== %s ===\n', seq_names{seq_idx});
-    fprintf('Expected: %s\n\n', seq_expects{seq_idx});
-
-    % Reset persistence filter before each sequence
+    % Reset persistence filter for this sequence
     reset_persistence_filter();
 
-    seq_data = sequences{seq_idx};
-    n_windows = size(seq_data, 1);
+    n_windows = size(seq.windows, 1);
+    final_flag_log = zeros(n_windows, 1);
+    final_zone_log = zeros(n_windows, 1);
 
-    fprintf('%4s %10s %10s %10s %5s %7s %8s %12s %12s\n', ...
-        'Win', 'r1', 'r2', 'r3', 'Flag', 'Zone', 'Confid', 'PersistZn', 'FinalFlag');
-    fprintf('%s\n', repmat('-', 1, 95));
+    for w = 1:n_windows
+        r1_raw = seq.windows(w, 1);
+        r2_raw = seq.windows(w, 2);
+        r3_raw = seq.windows(w, 3);
 
-    for win = 1:n_windows
-        r1 = seq_data(win, 1);
-        r2 = seq_data(win, 2);
-        r3 = seq_data(win, 3);
+        % Call GP classifier
+        [flag_gp, confidence_gp, ~, zone_gp, ~] = predict_leak_zone(r1_raw, r2_raw, r3_raw);
 
-        % Run prediction
-        [flag_raw, confidence_raw, ~, zone_raw, p_vec] = predict_leak_zone(r1, r2, r3);
+        % Call persistence filter
+        [final_flag, final_zone, counter_snap] = persistence_filter(flag_gp, zone_gp, confidence_gp);
 
-        % Run persistence filter
-        [final_flag, final_zone, counter_snap] = persistence_filter(flag_raw, zone_raw, confidence_raw);
+        % Log outcomes
+        final_flag_log(w) = final_flag;
+        final_zone_log(w) = final_zone;
 
-        % Compute magnitude
-        magnitude = sqrt(r1^2 + r2^2 + r3^2);
-
-        % Print window results
-        fprintf('%4d %10.3f %10.3f %10.3f ', win, r1, r2, r3);
-        fprintf('%5d %7s %8.2f ', flag_raw, zone_names{zone_raw + 1}, confidence_raw);
-
-        if final_flag == 1
-            check_str = sprintf('%s(%d/%d)', zone_names{final_zone+1}, ceil(max(counter_snap)), 5);
-        else
-            check_str = '—';
-        end
-        fprintf('%12s ', check_str);
-
-        if final_flag == 0
-            final_str = 'NO';
-        elseif final_flag == 1
-            final_str = 'YES';
-        else
-            final_str = 'UNCERT';
-        end
-        fprintf('%12s\n', final_str);
+        % Print window result
+        magnitude = sqrt(r1_raw^2 + r2_raw^2 + r3_raw^2);
+        fprintf('W%2d: r=[%6.2f,%6.2f,%6.2f] mag=%5.2f| GP_flag=%d zone=%d conf=%.2f| persist_flag=%d zone=%d| counters=%s\n', ...
+            w, r1_raw, r2_raw, r3_raw, magnitude, ...
+            flag_gp, zone_gp, confidence_gp, ...
+            final_flag, final_zone, ...
+            sprintf('[%.1f,%.1f,%.1f,%.1f]', counter_snap));
     end
 
-    fprintf('\n');
+    % Analyze results
+    fprintf('\nSequence result:\n');
+    fprintf('  Expected: %s\n', seq.expected_outcome);
+    fprintf('  Window-by-window final flags: %s\n', sprintf('%d ', final_flag_log));
+    fprintf('  Final zones: %s\n', sprintf('%d ', final_zone_log));
+
+    % Simple PASS/FAIL assessment
+    pass_fail = 'INFORMATIONAL';
+    if seq_idx == 1
+        if all(final_flag_log == 0)
+            pass_fail = 'PASS';
+        else
+            pass_fail = 'FAIL';
+        end
+    elseif seq_idx == 2
+        if max(final_flag_log(7:end)) == 1 && max(final_zone_log(7:end)) == 2
+            pass_fail = 'PASS';
+        else
+            pass_fail = 'FAIL';
+        end
+    elseif seq_idx == 3
+        if max(final_flag_log) < 1
+            pass_fail = 'PASS';
+        else
+            pass_fail = 'FAIL';
+        end
+    elseif seq_idx == 4
+        if max(final_flag_log(7:end)) == 1 && max(final_zone_log(7:end)) == 3
+            pass_fail = 'PASS';
+        else
+            pass_fail = 'FAIL';
+        end
+    elseif seq_idx == 5
+        % Complex sequence, just check that zones changed
+        if length(unique(final_zone_log(final_zone_log > 0))) > 1
+            pass_fail = 'PASS (zones transitioned)';
+        else
+            pass_fail = 'INFORMATIONAL';
+        end
+    end
+
+    results(seq_idx).pass_fail = pass_fail;
+    fprintf('  Result: %s\n\n', pass_fail);
 end
 
+% ---- Summary ----
 fprintf('=================================================\n');
-fprintf('STEP 5 COMPLETE\n');
+fprintf('SEQUENCE TEST SUMMARY\n');
 fprintf('=================================================\n');
-fprintf('All sequences tested. Review results above.\n');
-fprintf('Next: Run step6_validate_performance.m\n\n');
+for seq_idx = 1:length(sequences)
+    fprintf('%s: %s\n', sequences(seq_idx).name, results(seq_idx).pass_fail);
+end
+
+fprintf('\nNext: Run step6_validate_performance.m\n\n');

@@ -2,148 +2,182 @@
 
 ## Overview
 
-This is a complete MATLAB implementation of an AI/ML diagnostic pipeline for **diesel engine air leak detection and isolation**. The system uses physics-based residual signals from a Simulink engine model and applies a multi-layer architecture combining K-Means clustering, Gaussian Process classification, and temporal filtering.
+This repository contains the complete AI/ML diagnostic pipeline for **diesel engine air leak detection and isolation**. The system detects leaks in four physical zones (intake, charge-air, exhaust pre-turbine, and exhaust post-turbine) using Gaussian Process classification on physics-based residuals from a Simulink engine model.
 
-## Key Features
+## Problem Statement
 
-- **Layer 3**: K-Means clustering on no-fault data to identify operating regimes and compute per-regime normalization tables
-- **Layer 4**: 5-class Gaussian Process classifiers (one-vs-rest strategy) for leak zone classification
-- **Layer 5**: Persistence filter with hysteresis to prevent false alerts from noise spikes
-- **Layer 6**: Output engine that assembles human-readable diagnostic strings
+**Caterpillar Tech Challenge 2026 — Problem Statement 3: Intake & Exhaust Air Leak Detection and Isolation**
 
-## System Architecture
+The pipeline must:
+1. **Detect** whether a leak exists
+2. **Isolate** which zone the leak is in (A, B, C, or D)
+3. **Quantify** confidence with uncertainty bounds
+4. **Recommend** specific physical inspection actions for field engineers
 
-### Inputs
-Three physics-based residual signals from a Simulink engine simulation:
-- `r1`: Mass balance residual (MAF sensor vs compressor predicted flow)
-- `r2`: Charge-air pressure ratio residual (compressor outlet vs intake manifold)
-- `r3`: Exhaust energy balance residual (EGT + backpressure composite)
+## Architecture
 
-### Outputs
-Four required diagnostic outputs:
-1. **FLAG**: "LEAK DETECTED" / "NO LEAK" / "UNCERTAIN — MONITORING"
-2. **CONFIDENCE**: Calibrated posterior probability with uncertainty bounds (e.g., "84% ± 5%")
-3. **LOCATION**: Which diagnostic zone (A, B, C, or D)
-4. **ACTION**: Specific physical inspection recommendation for the engineer
+The AI pipeline is organized into **layers** (based on the Simulink residual generator outputs):
 
-### Fault Zones
-- **Zone 0**: No fault
-- **Zone 1 (A)**: Leak between MAF sensor and turbocharger compressor inlet
-- **Zone 2 (B)**: Leak in charge-air system (compressor outlet through CAC/intercooler to intake manifold)
-- **Zone 3 (C)**: Exhaust leak pre-turbine (exhaust manifold → turbine inlet)
-- **Zone 4 (D)**: Exhaust leak post-turbine (turbine outlet → aftertreatment → tailpipe)
-
-## Files Included
-
-### Training & Validation Scripts
-1. **step1_check_training_data.m** — Load and inspect `training_data_raw.mat`
-2. **step2_train_normalizer.m** — K-Means clustering + per-regime variance (saves `normalizer_params.mat`)
-3. **step3_train_GP_classifier.m** — Train 5 binary GP classifiers (saves `GP_classifier.mat`)
-4. **step4_test_single_prediction.m** — Manual test on 6 known residual patterns
-5. **step5_run_full_pipeline_test.m** — End-to-end integration test on synthetic sequences
-6. **step6_validate_performance.m** — Cross-validation, MDL computation, performance metrics
-
-### Core Runtime Functions
-- **predict_leak_zone.m** — Master prediction function (queries GPs, applies magnitude gate)
-- **persistence_filter.m** — Temporal smoothing with persistence threshold + hysteresis
-- **reset_persistence_filter.m** — Reset persistent state between simulation runs
-- **assemble_output.m** — Assemble human-readable diagnostic strings
-
-### Visualization & Integration
-- **plot_residual_space.m** — 3D scatter plot of training data for presentations
-- **GP_Classifier_Simulink_Block.m** — Copy this function into a Simulink MATLAB Function block
+- **Layer 3**: K-Means clustering on no-fault data → per-regime variance normalization
+- **Layer 4**: 5-class Gaussian Process (OvR) classification on normalized residuals
+- **Layer 5**: Persistence filter (temporal smoothing + hysteresis)
+- **Layer 6**: Output engine (assembles human-readable strings)
 
 ## Quick Start
 
-### Prerequisites
-- MATLAB R2021a or later
-- Statistics and Machine Learning Toolbox
+### 1. Prepare Training Data
+Create `training_data_raw.mat` with a matrix called `training_data`:
+- Shape: `Nx4` (N = number of simulation scenarios)
+- Columns: `[r1, r2, r3, zone_label]`
+  - `r1` = Mass balance residual (MAF sensor vs compressor)
+  - `r2` = Charge-air pressure ratio residual
+  - `r3` = Exhaust energy balance residual
+  - `zone_label` = 0 (no fault), 1 (Zone A), 2 (Zone B), 3 (Zone C), 4 (Zone D)
+- Typical size: 120–200 rows with balanced class distribution
 
-### Training Pipeline
+### 2. Run the Pipeline Steps (in order)
+
 ```matlab
-% 1. Verify training data
-step1_check_training_data
-
-% 2. Train normalizer (K-Means)
-step2_train_normalizer
-
-% 3. Train GP classifiers
-step3_train_GP_classifier
-
-% 4. Test on known cases
-step4_test_single_prediction
-
-% 5. Integration test
-step5_run_full_pipeline_test
-
-% 6. Performance validation
-step6_validate_performance
-
-% 7. Create presentation visuals
-plot_residual_space
+step1_check_training_data        % Load & validate data
+step2_train_normalizer           % K-Means + normalize
+step3_train_GP_classifier        % Train 5 GPs
+step4_test_single_prediction     % Manual API test
+step5_run_full_pipeline_test     % Integration test
+step6_validate_performance       % Cross-validation & MDL curves
+plot_residual_space              % 3D visualization
 ```
 
-### Using in Simulink
-1. Copy the contents of `GP_Classifier_Simulink_Block.m` into a MATLAB Function block
-2. Make sure `GP_classifier.mat` and `normalizer_params.mat` are on the MATLAB path
-3. Call `reset_persistence_filter()` before starting a new simulation
-4. Wire residuals r1, r2, r3 and steady-state flag into the block
-5. Connect outputs to displays and scopes
+### 3. Deploy to Simulink
 
-## Output Examples
+Copy `GP_Classifier_Simulink_Block.m` into a MATLAB Function block in Simulink:
 
-### No Leak Detected
 ```
-FLAG:       NO LEAK
-CONFIDENCE: N/A
-LOCATION:   None — no fault detected
-ACTION:     Continue testing. All physics residuals within baseline bounds.
-```
-
-### Zone A Leak Detected
-```
-FLAG:       ⚠ LEAK DETECTED
-CONFIDENCE: 87% ± 6%
-LOCATION:   Zone A: Intake duct between MAF sensor and turbocharger compressor inlet
-ACTION:     INSPECT: Intake ducting... [full recommendations]
+Residual Generator (from Layer 2)
+        ↓
+    [r1, r2, r3, is_steady_state]
+        ↓
+[GP_Classifier_Simulink_Block]
+        ↓
+[flag, confidence, zone_idx, p_vector]
+        ↓
+   Display blocks + Scope
 ```
 
-### Uncertain (Monitoring)
-```
-FLAG:       ◉ UNCERTAIN — MONITORING
-CONFIDENCE: 62% (insufficient for alert)
-LOCATION:   Zone B: Charge-air system...
-ACTION:     [Recommendations] | PENDING CONFIRMATION:...
-```
+## Files
 
-## Configuration Parameters
+### Training & Validation
+| File | Purpose |
+|------|---------|
+| `step1_check_training_data.m` | Load & validate training data, check fault signatures |
+| `step2_train_normalizer.m` | K-Means clustering (K=4), compute per-regime sigma table |
+| `step3_train_GP_classifier.m` | Train 5 binary GP classifiers (one-vs-rest) |
+| `step4_test_single_prediction.m` | Manual test on 6 known inputs |
+| `step5_run_full_pipeline_test.m` | End-to-end integration test with synthetic sequences |
+| `step6_validate_performance.m` | Cross-validation, MDL curves, false positive analysis |
 
-Edit these constants in the source files to tune system behavior:
+### Runtime Functions
+| File | Purpose |
+|------|---------|
+| `predict_leak_zone.m` | Core GP classification function (called every sample) |
+| `persistence_filter.m` | Temporal smoothing + hysteresis (Layer 5) |
+| `reset_persistence_filter.m` | Reset persistent state between runs |
+| `assemble_output.m` | Convert numeric outputs to human-readable strings |
 
-| Parameter | File | Default | Purpose |
-|-----------|------|---------|---------|
-| `MAGNITUDE_THRESHOLD` | predict_leak_zone.m | 2.0 | Raw residual magnitude gate |
-| `P_HIGH` | predict_leak_zone.m | 0.70 | GP alert entry threshold |
-| `N_PERSIST` | persistence_filter.m | 5 | Windows to confirm alert |
-| `DECAY_RATE` | persistence_filter.m | 0.5 | Counter decay for inactive zones |
-| `CLEAR_STREAK` | persistence_filter.m | 3 | No-fault windows to exit alert |
+### Visualization & Simulation
+| File | Purpose |
+|------|---------|
+| `plot_residual_space.m` | 3D scatter plot of training data in residual space |
+| `GP_Classifier_Simulink_Block.m` | Simulink MATLAB Function block wrapper |
+
+## Key Thresholds
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Magnitude gate | 2.0 (raw units) | Hard gate: `||r||` < 2.0 → no-fault |
+| P_HIGH | 0.70 | GP probability entry threshold for alert |
+| P_LOW | 0.40 | Hysteresis exit threshold (no-fault streak) |
+| N_PERSIST | 5 | Windows required to confirm alert |
+| DECAY_RATE | 0.5 | Per-window counter decay for inactive zones |
+
+## Outputs
+
+The system produces **four required outputs** at each time step:
+
+1. **FLAG** (integer)
+   - `0` = "NO LEAK"
+   - `1` = "⚠ LEAK DETECTED"
+   - `2` = "◉ UNCERTAIN — MONITORING"
+
+2. **CONFIDENCE** (string)
+   - Format: "84% ± 5%" (posterior probability ± 2σ)
+   - Or: "N/A" if no fault
+
+3. **LOCATION** (string)
+   - Zone A, B, C, or D with physical description
+   - Or: "None — no fault detected"
+
+4. **ACTION** (string)
+   - Specific field inspection instructions per zone
+   - Includes diagnostic confirmation methods
 
 ## Expected Performance
 
-From validation on typical synthetic datasets:
-- **Detection Rate**: >95% for faults above MDL
-- **False Positive Rate**: <3%
-- **Zone Isolation Rate**: >88%
-- **Minimum Detectable Leak (MDL)**:
-  - Zone A: ~7% flow loss
-  - Zone B: ~5% flow loss
-  - Zone C: ~8% flow loss
-  - Zone D: ~10% flow loss
+On typical training data with **>95% class balance**, expect:
 
-## Authors & References
+| Metric | Value |
+|--------|-------|
+| Overall detection rate | >95% |
+| False positive rate | <3% |
+| Zone isolation accuracy | >88% |
+| Zone A MDL | ~7% flow loss |
+| Zone B MDL | ~5% flow loss |
+| Zone C MDL | ~8% flow loss |
+| Zone D MDL | ~10% flow loss |
 
-Built for the **Caterpillar Tech Challenge 2026 — Problem Statement 3: Intake & Exhaust Air Leak Detection and Isolation**.
+## Fault Signatures
 
-## License
+The residuals exhibit distinct patterns for each zone:
 
-Educational use. See competition guidelines.
+- **Zone 0** (No Fault): `r1 ≈ 0, r2 ≈ 0, r3 ≈ 0`
+- **Zone 1 (A)** (MAF-Compressor): `r1 << 0` (strongly negative)
+- **Zone 2 (B)** (Charge-Air): `r2 << 0` (strongly negative)
+- **Zone 3 (C)** (Pre-Turbine): `r3 >> 0` (strongly positive)
+- **Zone 4 (D)** (Post-Turbine): `r3 > 0` (moderately positive)
+
+## Troubleshooting
+
+### "training_data_raw.mat not found"
+Run Simulink data generation script to create training data.
+
+### All predictions return Zone 0 (no fault)
+Check magnitude gate threshold. If raw residuals have a different scale, adjust `MAGNITUDE_THRESHOLD` in `predict_leak_zone.m`.
+
+### False positives too high (>5%)
+- Increase `P_HIGH` threshold in `predict_leak_zone.m`
+- Increase `N_PERSIST` in `persistence_filter.m`
+
+### Low detection rate (<95%)
+- Ensure training data has each zone well-represented (>10 examples each)
+- Check that fault signatures match expected patterns (run `step1_check_training_data.m`)
+- Verify Simulink residual generator is calibrated correctly
+
+## References
+
+- **Gaussian Process Classifier**: MATLAB `fitcgp()` (Statistics and Machine Learning Toolbox)
+- **K-Means**: MATLAB `kmeans()` (Statistics and Machine Learning Toolbox)
+- **One-vs-Rest Strategy**: 5 binary GPs, one per class (0–4)
+- **Kernel**: Squared exponential (RBF) with automatic hyperparameter optimization
+
+## MATLAB Requirements
+
+- MATLAB R2021a or later
+- Statistics and Machine Learning Toolbox
+- (Optional) Simulink for real-time deployment
+
+## Author
+
+Built for **Caterpillar Tech Challenge 2026**
+
+---
+
+**For questions or issues**, check the inline code comments and the troubleshooting section above.
